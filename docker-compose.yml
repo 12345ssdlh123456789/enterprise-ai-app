@@ -1,0 +1,505 @@
+services:
+  # ============ 基础设施服务 ============
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: enterprise-ai-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-enterprise_ai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-enterprise_ai_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-enterprise_ai}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-enterprise_ai} -d ${POSTGRES_DB:-enterprise_ai}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - enterprise-ai-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  redis:
+    image: redis:7-alpine
+    container_name: enterprise-ai-redis
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - enterprise-ai-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  # 向量数据库 (可选，使用 pgvector 时可注释)
+  # chroma:
+  #   image: chromadb/chroma:latest
+  #   container_name: enterprise-ai-chroma
+  #   environment:
+  #     CHROMA_SERVER_HOST: 0.0.0.0
+  #     CHROMA_SERVER_HTTP_PORT: 8000
+  #     ANONYMIZED_TELEMETRY: FALSE
+  #   ports:
+  #     - "8001:8000"
+  #   volumes:
+  #     - chroma_data:/chroma/chroma
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #   networks:
+  #     - enterprise-ai-network
+
+  # MinIO (S3 兼容存储)
+  minio:
+    image: minio/minio:latest
+    container_name: enterprise-ai-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - enterprise-ai-network
+
+  # 邮件测试 (开发环境)
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: enterprise-ai-mailpit
+    ports:
+      - "1025:1025"  # SMTP
+      - "8025:8025"  # Web UI
+    networks:
+      - enterprise-ai-network
+
+  # ============ 应用服务 ============
+
+  # API 网关 / 主后端服务
+  api-gateway:
+    build:
+      context: .
+      dockerfile: infra/docker/api-gateway/Dockerfile
+      target: development
+    container_name: enterprise-ai-api-gateway
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-enterprise_ai}:${POSTGRES_PASSWORD:-enterprise_ai_dev}@postgres:5432/${POSTGRES_DB:-enterprise_ai}
+      - REDIS_URL=redis://redis:6379/0
+      - JWT_SECRET=${JWT_SECRET:-dev-secret-key-change-in-production-min-32-chars}
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:3001
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./services/api-gateway:/app
+      - ./packages:/app/packages
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - enterprise-ai-network
+    develop:
+      watch:
+        - action: sync
+          path: ./services/api-gateway
+          target: /app
+        - action: sync
+          path: ./packages
+          target: /app/packages
+
+  # 认证服务
+  auth-service:
+    build:
+      context: ./services/auth-service
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: enterprise-ai-auth-service
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-enterprise_ai}:${POSTGRES_PASSWORD:-enterprise_ai_dev}@postgres:5432/${POSTGRES_DB:-enterprise_ai}
+      - REDIS_URL=redis://redis:6379/1
+      - JWT_SECRET_KEY=${JWT_SECRET:-dev-secret-key-change-in-production-min-32-chars}
+      - LOG_LEVEL=INFO
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:8000
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./services/auth-service:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - enterprise-ai-network
+
+  # 通知服务
+  notification-service:
+    build:
+      context: ./services/notification-service
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: enterprise-ai-notification-service
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-enterprise_ai}:${POSTGRES_PASSWORD:-enterprise_ai_dev}@postgres:5432/${POSTGRES_DB:-enterprise_ai}
+      - REDIS_URL=redis://redis:6379/1
+      - SMTP_HOST=mailpit
+      - SMTP_PORT=1025
+      - SMTP_FROM=noreply@enterprise-ai.local
+      - LOG_LEVEL=INFO
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:8000
+    ports:
+      - "8006:8006"
+    volumes:
+      - ./services/notification-service:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+    networks:
+      - enterprise-ai-network
+
+  # RAG 服务
+  rag-service:
+    build:
+      context: .
+      dockerfile: infra/docker/rag-service/Dockerfile
+      target: development
+    container_name: enterprise-ai-rag-service
+    environment:
+      - APP_ENV=development
+      - DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-enterprise_ai}:${POSTGRES_PASSWORD:-enterprise_ai_dev}@postgres:5432/${POSTGRES_DB:-enterprise_ai}
+      - REDIS_URL=redis://redis:6379/2
+      - EMBEDDING_API_KEY=${OPENAI_API_KEY}
+      - EMBEDDING_API_BASE=https://api.openai.com/v1
+      - EMBEDDING_MODEL=text-embedding-3-small
+      - EMBEDDING_DIM=1536
+      - COHERE_API_KEY=${COHERE_API_KEY}
+      - RERANK_MODEL=rerank-v3.5
+      - CHUNK_SIZE=1000
+      - CHUNK_OVERLAP=200
+      - RETRIEVAL_TOP_K=20
+      - RETRIEVAL_FINAL_K=5
+      - RRF_K=60
+      - BM25_INDEX_PATH=/data/bm25_index
+      - API_GATEWAY_URL=http://api-gateway:8000
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+    ports:
+      - "8002:8001"
+    volumes:
+      - ./services/rag-service:/app
+      - ./uploads:/app/uploads
+      - rag_bm25_data:/data/bm25_index
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - enterprise-ai-network
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 1G
+
+  # LLM 代理服务
+  llm-service:
+    build:
+      context: .
+      dockerfile: infra/docker/llm-service/Dockerfile
+      target: development
+    container_name: enterprise-ai-llm-service
+    environment:
+      - APP_ENV=development
+      - DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-enterprise_ai}:${POSTGRES_PASSWORD:-enterprise_ai_dev}@postgres:5432/${POSTGRES_DB:-enterprise_ai}
+      - REDIS_URL=redis://redis:6379/3
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_API_BASE=https://api.openai.com/v1
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ANTHROPIC_API_BASE=https://api.anthropic.com
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
+      - AZURE_OPENAI_API_VERSION=2024-02-15-preview
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - DEFAULT_CHAT_MODEL=gpt-4o-mini
+      - DEFAULT_EMBEDDING_MODEL=text-embedding-3-small
+      - LB_STRATEGY=round_robin
+      - MAX_RETRIES=3
+      - TIMEOUT_SECONDS=60
+      - COST_TRACKING_ENABLED=true
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./services/llm-service:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - enterprise-ai-network
+
+  # Ollama (本地模型服务，可选)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: enterprise-ai-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - enterprise-ai-network
+    deploy:
+      resources:
+        limits:
+          cpus: '8'
+          memory: 16G
+        reservations:
+          cpus: '2'
+          memory: 4G
+    # 仅在需要本地模型时启用
+    profiles:
+      - local-models
+
+  # 文档处理服务
+  document-service:
+    build:
+      context: .
+      dockerfile: infra/docker/document-service/Dockerfile
+      target: development
+    container_name: enterprise-ai-document-service
+    environment:
+      - APP_ENV=development
+      - DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-enterprise_ai}:${POSTGRES_PASSWORD:-enterprise_ai_dev}@postgres:5432/${POSTGRES_DB:-enterprise_ai}
+      - REDIS_URL=redis://redis:6379/4
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin123}
+      - MINIO_BUCKET=documents
+      - MINIO_USE_SSL=false
+      - MINIO_REGION=us-east-1
+      - MAX_FILE_SIZE=104857600
+      - TESSERACT_LANG=chi_sim+eng
+      - API_GATEWAY_URL=http://api-gateway:8000
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+    ports:
+      - "8004:8004"
+    volumes:
+      - ./services/document-service:/app
+      - ./uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - enterprise-ai-network
+
+  # 工作流服务
+  workflow-service:
+    build:
+      context: .
+      dockerfile: infra/docker/workflow-service/Dockerfile
+      target: development
+    container_name: enterprise-ai-workflow-service
+    environment:
+      - APP_ENV=development
+      - DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-enterprise_ai}:${POSTGRES_PASSWORD:-enterprise_ai_dev}@postgres:5432/${POSTGRES_DB:-enterprise_ai}
+      - REDIS_URL=redis://redis:6379/5
+      - CELERY_BROKER_URL=redis://redis:6379/5
+      - CELERY_RESULT_BACKEND=redis://redis:6379/5
+      - API_GATEWAY_URL=http://api-gateway:8000
+      - LLM_SERVICE_URL=http://llm-service:8003
+      - RAG_SERVICE_URL=http://rag-service:8001
+      - MAX_CONCURRENT_EXECUTIONS=10
+      - EXECUTION_TIMEOUT_SECONDS=300
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+    ports:
+      - "8005:8005"
+    volumes:
+      - ./services/workflow-service:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      llm-service:
+        condition: service_started
+      rag-service:
+        condition: service_started
+    networks:
+      - enterprise-ai-network
+
+  # 前端应用
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/web/Dockerfile
+      target: development
+    container_name: enterprise-ai-web
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=http://api-gateway:8000/api/v1
+      - NEXT_PUBLIC_WS_URL=ws://api-gateway:8000
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./apps/web:/app/apps/web
+      - ./packages:/app/packages
+      - /app/node_modules
+      - /app/apps/web/.next
+    depends_on:
+      - api-gateway
+    networks:
+      - enterprise-ai-network
+    develop:
+      watch:
+        - action: sync
+          path: ./apps/web
+          target: /app/apps/web
+        - action: sync
+          path: ./packages
+          target: /app/packages
+
+  # 管理后台
+  admin:
+    build:
+      context: .
+      dockerfile: infra/docker/admin/Dockerfile
+      target: development
+    container_name: enterprise-ai-admin
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=http://api-gateway:8000/api/v1
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./apps/admin:/app/apps/admin
+      - ./packages:/app/packages
+      - /app/node_modules
+      - /app/apps/admin/.next
+    depends_on:
+      - api-gateway
+    networks:
+      - enterprise-ai-network
+
+  # ============ 监控服务 ============
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: enterprise-ai-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - enterprise-ai-network
+    profiles:
+      - monitoring
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: enterprise-ai-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "3002:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/docker/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    networks:
+      - enterprise-ai-network
+    profiles:
+      - monitoring
+
+  # Jaeger (链路追踪)
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: enterprise-ai-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+      - SPAN_STORAGE_TYPE=badger
+    ports:
+      - "16686:16686"  # UI
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP
+    volumes:
+      - jaeger_data:/var/lib/jaeger
+    networks:
+      - enterprise-ai-network
+    profiles:
+      - monitoring
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  ollama_data:
+  prometheus_data:
+  grafana_data:
+  jaeger_data:
+  rag_bm25_data:
+  # chroma_data:
+
+networks:
+  enterprise-ai-network:
+    driver: bridge
+    name: enterprise-ai-network

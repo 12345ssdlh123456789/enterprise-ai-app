@@ -1,0 +1,122 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "enterprise-ai.fullname" . }}-llm-service
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "enterprise-ai.labels" . | nindent 4 }}
+    app: llm-service
+spec:
+  replicas: {{ .Values.services.llmService.replicas }}
+  selector:
+    matchLabels:
+      app: llm-service
+  template:
+    metadata:
+      labels:
+        app: llm-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8003"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: {{ include "enterprise-ai.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: llm-service
+          image: {{ .Values.services.llmService.image }}:{{ .Values.services.llmService.tag }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: {{ .Values.services.llmService.port }}
+              name: http
+          envFrom:
+            - configMapRef:
+                name: {{ include "enterprise-ai.fullname" . }}-config
+            - secretRef:
+                name: {{ include "enterprise-ai.fullname" . }}-secrets
+          resources:
+            {{- toYaml .Values.services.llmService.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.services.llmService.port }}
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: {{ .Values.services.llmService.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - llm-service
+                topologyKey: kubernetes.io/hostname
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "enterprise-ai.fullname" . }}-llm-service
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "enterprise-ai.labels" . | nindent 4 }}
+    app: llm-service
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.services.llmService.port }}
+      targetPort: {{ .Values.services.llmService.port }}
+      protocol: TCP
+      name: http
+  selector:
+    app: llm-service
+---
+{{- if .Values.services.llmService.hpa.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "enterprise-ai.fullname" . }}-llm-service-hpa
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "enterprise-ai.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "enterprise-ai.fullname" . }}-llm-service
+  minReplicas: {{ .Values.services.llmService.hpa.minReplicas }}
+  maxReplicas: {{ .Values.services.llmService.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.services.llmService.hpa.targetCPUUtilization }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.services.llmService.hpa.targetMemoryUtilization }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+    scaleUp:
+      stabilizationWindowSeconds: 0
+{{- end }}

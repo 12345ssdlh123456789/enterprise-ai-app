@@ -1,0 +1,1 @@
+"""Notification Service models package."""

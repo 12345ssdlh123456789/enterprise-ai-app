@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+  namespace: enterprise-ai
+  labels:
+    app: auth-service
+    component: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: auth-service
+  template:
+    metadata:
+      labels:
+        app: auth-service
+        component: backend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8007"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: enterprise-ai
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: auth-service
+          image: enterprise-ai/auth-service:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8007
+              name: http
+          envFrom:
+            - configMapRef:
+                name: enterprise-ai-config
+            - secretRef:
+                name: enterprise-ai-secrets
+          env:
+            # 服务默认监听 8000；这里对齐 start-microservices.ps1 与网关默认的 AUTH_SERVICE_URL
+            - name: PORT
+              value: "8007"
+            # 与网关共用同一份 JWT 密钥（网关读 JWT_SECRET，auth 读 JWT_SECRET_KEY）
+            - name: JWT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: enterprise-ai-secrets
+                  key: JWT_SECRET
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8007
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8007
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - auth-service
+                topologyKey: kubernetes.io/hostname
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+  namespace: enterprise-ai
+  labels:
+    app: auth-service
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8007
+      targetPort: 8007
+      protocol: TCP
+      name: http
+  selector:
+    app: auth-service

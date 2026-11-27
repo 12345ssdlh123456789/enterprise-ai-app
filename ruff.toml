@@ -1,0 +1,39 @@
+# Ruff 配置（CI 与本机共用）
+#
+# 只启用「语法/未定义名/未使用变量/未使用 import」这类硬问题：
+#   E4  导入相关（如重复导入）
+#   E7  语句级错误
+#   E9  运行期必然报错（如语法错误）
+#   F   pyflakes（未定义名、未使用 import/变量、f-string 占位符等）
+#
+# 不启用 UP/B/I 等风格类规则：一次性改 1000+ 行属于重构，不在本配置目标内。
+# target-version 与 CI 的 PYTHON_VERSION(3.11) 对齐，避免按 3.12+ 语法放行。
+
+target-version = "py311"
+line-length = 120
+
+extend-exclude = [
+    "**/.venv",
+    "**/node_modules",
+    "**/__pycache__",
+    "**/alembic/versions",
+]
+
+[lint]
+select = ["E4", "E7", "E9", "F"]
+ignore = [
+    # SQLAlchemy 过滤器必须写 `Model.enabled == True`：直接写布尔表达式会变成 Python 真假判断，
+    # 等价于 `WHERE false`。ruff 的建议在这里是错的。
+    "E712",
+    # FastAPI 应用里为了避开循环导入，导入常放在函数内/定义之后；
+    # E402 会把这类有意为之的写法全部报错。
+    "E402",
+]
+
+[lint.per-file-ignores]
+# 包的 __init__.py 常常只做再导出；这里显式声明而不是逐个加 noqa
+"__init__.py" = ["F401"]
+# env.py 里导入模型是为了把它们注册到 Base.metadata，属于副作用导入
+"**/alembic/env.py" = ["F401"]
+# 测试里 fixture 导入/临时变量更宽松
+"tests/*.py" = ["F401"]

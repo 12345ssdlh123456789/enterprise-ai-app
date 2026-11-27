@@ -1,0 +1,5 @@
+# 仓库级开发工具（不装进运行时镜像）
+# CI 的 Python Lint job 用它；本地：pip install -r requirements-dev.txt
+ruff>=0.6,<1.0
+# 冒烟用例（tests/）；本机 venv 里常缺，缺了 python -m pytest 会直接 ModuleNotFoundError
+pytest>=8,<10

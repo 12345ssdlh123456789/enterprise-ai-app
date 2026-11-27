@@ -1,0 +1,122 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "enterprise-ai.fullname" . }}-document-service
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "enterprise-ai.labels" . | nindent 4 }}
+    app: document-service
+spec:
+  replicas: {{ .Values.services.documentService.replicas }}
+  selector:
+    matchLabels:
+      app: document-service
+  template:
+    metadata:
+      labels:
+        app: document-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8004"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: {{ include "enterprise-ai.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: document-service
+          image: {{ .Values.services.documentService.image }}:{{ .Values.services.documentService.tag }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: {{ .Values.services.documentService.port }}
+              name: http
+          envFrom:
+            - configMapRef:
+                name: {{ include "enterprise-ai.fullname" . }}-config
+            - secretRef:
+                name: {{ include "enterprise-ai.fullname" . }}-secrets
+          resources:
+            {{- toYaml .Values.services.documentService.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.services.documentService.port }}
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: {{ .Values.services.documentService.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - document-service
+                topologyKey: kubernetes.io/hostname
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "enterprise-ai.fullname" . }}-document-service
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "enterprise-ai.labels" . | nindent 4 }}
+    app: document-service
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.services.documentService.port }}
+      targetPort: {{ .Values.services.documentService.port }}
+      protocol: TCP
+      name: http
+  selector:
+    app: document-service
+---
+{{- if .Values.services.documentService.hpa.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "enterprise-ai.fullname" . }}-document-service-hpa
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "enterprise-ai.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "enterprise-ai.fullname" . }}-document-service
+  minReplicas: {{ .Values.services.documentService.hpa.minReplicas }}
+  maxReplicas: {{ .Values.services.documentService.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.services.documentService.hpa.targetCPUUtilization }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.services.documentService.hpa.targetMemoryUtilization }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+    scaleUp:
+      stabilizationWindowSeconds: 0
+{{- end }}

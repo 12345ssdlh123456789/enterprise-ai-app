@@ -1,0 +1,168 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+commonLabels:
+  environment: prod
+
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: api-gateway
+      spec:
+        replicas: 3
+        template:
+          spec:
+            containers:
+              - name: api-gateway
+                resources:
+                  requests:
+                    cpu: "500m"
+                    memory: "1Gi"
+                  limits:
+                    cpu: "2000m"
+                    memory: "2Gi"
+    target:
+      kind: Deployment
+      name: api-gateway
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: rag-service
+      spec:
+        replicas: 3
+        template:
+          spec:
+            containers:
+              - name: rag-service
+                resources:
+                  requests:
+                    cpu: "1000m"
+                    memory: "2Gi"
+                  limits:
+                    cpu: "4000m"
+                    memory: "8Gi"
+    target:
+      kind: Deployment
+      name: rag-service
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: llm-service
+      spec:
+        replicas: 3
+    target:
+      kind: Deployment
+      name: llm-service
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: document-service
+      spec:
+        replicas: 2
+    target:
+      kind: Deployment
+      name: document-service
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: workflow-service
+      spec:
+        replicas: 3
+    target:
+      kind: Deployment
+      name: workflow-service
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: web
+      spec:
+        replicas: 3
+    target:
+      kind: Deployment
+      name: web
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: admin
+      spec:
+        replicas: 2
+    target:
+      kind: Deployment
+      name: admin
+  - patch: |-
+      apiVersion: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+      metadata:
+        name: api-gateway-hpa
+      spec:
+        minReplicas: 3
+        maxReplicas: 20
+    target:
+      kind: HorizontalPodAutoscaler
+      name: api-gateway-hpa
+  - patch: |-
+      apiVersion: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+      metadata:
+        name: rag-service-hpa
+      spec:
+        minReplicas: 3
+        maxReplicas: 15
+    target:
+      kind: HorizontalPodAutoscaler
+      name: rag-service-hpa
+
+images:
+  - name: enterprise-ai/api-gateway
+    newTag: v1.0.0
+  - name: enterprise-ai/auth-service
+    newTag: v1.0.0
+  - name: enterprise-ai/notification-service
+    newTag: v1.0.0
+  - name: enterprise-ai/rag-service
+    newTag: v1.0.0
+  - name: enterprise-ai/llm-service
+    newTag: v1.0.0
+  - name: enterprise-ai/document-service
+    newTag: v1.0.0
+  - name: enterprise-ai/workflow-service
+    newTag: v1.0.0
+  - name: enterprise-ai/web
+    newTag: v1.0.0
+  - name: enterprise-ai/admin
+    newTag: v1.0.0
+
+configMapGenerator:
+  - name: enterprise-ai-config
+    namespace: enterprise-ai
+    behavior: merge
+    literals:
+      - APP_ENV=production
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/enterprise_ai
+      - REDIS_URL=redis://redis:6379/0
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+
+secretGenerator:
+  - name: enterprise-ai-secrets
+    namespace: enterprise-ai
+    behavior: merge
+    literals:
+      - JWT_SECRET=CHANGE_ME_IN_PRODUCTION_MIN_32_CHARS
+      - POSTGRES_PASSWORD=CHANGE_ME_IN_PRODUCTION
+      - REDIS_PASSWORD=CHANGE_ME_IN_PRODUCTION
+      - MINIO_ROOT_PASSWORD=CHANGE_ME_IN_PRODUCTION
+    options:
+      disableNameSuffixHash: true

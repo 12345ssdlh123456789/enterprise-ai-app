@@ -1,0 +1,5 @@
+packages:
+  # 共享 TS 包与前端应用走 pnpm workspace。
+  # services/* 是 Python 服务（没有 package.json），不要放进来。
+  - 'packages/*'
+  - 'apps/*'

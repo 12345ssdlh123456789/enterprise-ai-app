@@ -1,0 +1,163 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "enterprise-ai.serviceAccountName" . }}
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "enterprise-ai.labels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "enterprise-ai.fullname" . }}-config
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "enterprise-ai.labels" . | nindent 4 }}
+data:
+  APP_ENV: {{ .Values.global.environment | default "production" }}
+  DEBUG: "false"
+  LOG_LEVEL: INFO
+  DATABASE_URL: {{ .Values.postgresql.connectionString | quote }}
+  REDIS_URL: {{ .Values.redis.connectionString | quote }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://{{ include "enterprise-ai.fullname" . }}-jaeger:4317
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "enterprise-ai.fullname" . }}-secrets
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "enterprise-ai.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  JWT_SECRET: {{ .Values.global.secrets.jwtSecret | quote }}
+  OPENAI_API_KEY: {{ .Values.global.secrets.openaiApiKey | quote }}
+  ANTHROPIC_API_KEY: {{ .Values.global.secrets.anthropicApiKey | quote }}
+  COHERE_API_KEY: {{ .Values.global.secrets.cohereApiKey | quote }}
+  POSTGRES_PASSWORD: {{ .Values.postgresql.auth.password | quote }}
+  REDIS_PASSWORD: {{ .Values.redis.auth.password | quote }}
+  MINIO_ROOT_USER: {{ .Values.minio.auth.rootUser | quote }}
+  MINIO_ROOT_PASSWORD: {{ .Values.minio.auth.rootPassword | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "enterprise-ai.fullname" . }}-api-gateway
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "enterprise-ai.labels" . | nindent 4 }}
+    app: api-gateway
+spec:
+  replicas: {{ .Values.services.apiGateway.replicas }}
+  selector:
+    matchLabels:
+      app: api-gateway
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: {{ include "enterprise-ai.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: api-gateway
+          image: {{ .Values.services.apiGateway.image }}:{{ .Values.services.apiGateway.tag }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: {{ .Values.services.apiGateway.port }}
+              name: http
+          envFrom:
+            - configMapRef:
+                name: {{ include "enterprise-ai.fullname" . }}-config
+            - secretRef:
+                name: {{ include "enterprise-ai.fullname" . }}-secrets
+          resources:
+            {{- toYaml .Values.services.apiGateway.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.services.apiGateway.port }}
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: {{ .Values.services.apiGateway.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - api-gateway
+                topologyKey: kubernetes.io/hostname
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "enterprise-ai.fullname" . }}-api-gateway
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "enterprise-ai.labels" . | nindent 4 }}
+    app: api-gateway
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.services.apiGateway.port }}
+      targetPort: {{ .Values.services.apiGateway.port }}
+      protocol: TCP
+      name: http
+  selector:
+    app: api-gateway
+---
+{{- if .Values.services.apiGateway.hpa.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "enterprise-ai.fullname" . }}-api-gateway-hpa
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "enterprise-ai.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "enterprise-ai.fullname" . }}-api-gateway
+  minReplicas: {{ .Values.services.apiGateway.hpa.minReplicas }}
+  maxReplicas: {{ .Values.services.apiGateway.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.services.apiGateway.hpa.targetCPUUtilization }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.services.apiGateway.hpa.targetMemoryUtilization }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+    scaleUp:
+      stabilizationWindowSeconds: 0
+{{- end }}

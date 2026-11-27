@@ -1,0 +1,125 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "enterprise-ai.fullname" . }}-web
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "enterprise-ai.labels" . | nindent 4 }}
+    app: web
+spec:
+  replicas: {{ .Values.services.web.replicas }}
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: {{ include "enterprise-ai.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: web
+          image: {{ .Values.services.web.image }}:{{ .Values.services.web.tag }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: {{ .Values.services.web.port }}
+              name: http
+          envFrom:
+            - configMapRef:
+                name: {{ include "enterprise-ai.fullname" . }}-config
+            - secretRef:
+                name: {{ include "enterprise-ai.fullname" . }}-secrets
+          env:
+            - name: NEXT_PUBLIC_API_URL
+              value: {{ .Values.services.web.env.NEXT_PUBLIC_API_URL | quote }}
+          resources:
+            {{- toYaml .Values.services.web.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /
+              port: {{ .Values.services.web.port }}
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: {{ .Values.services.web.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - web
+                topologyKey: kubernetes.io/hostname
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "enterprise-ai.fullname" . }}-web
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "enterprise-ai.labels" . | nindent 4 }}
+    app: web
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.services.web.port }}
+      targetPort: {{ .Values.services.web.port }}
+      protocol: TCP
+      name: http
+  selector:
+    app: web
+---
+{{- if .Values.services.web.hpa.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "enterprise-ai.fullname" . }}-web-hpa
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "enterprise-ai.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "enterprise-ai.fullname" . }}-web
+  minReplicas: {{ .Values.services.web.hpa.minReplicas }}
+  maxReplicas: {{ .Values.services.web.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.services.web.hpa.targetCPUUtilization }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.services.web.hpa.targetMemoryUtilization }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+    scaleUp:
+      stabilizationWindowSeconds: 0
+{{- end }}

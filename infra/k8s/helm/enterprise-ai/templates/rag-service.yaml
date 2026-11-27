@@ -1,0 +1,144 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "enterprise-ai.fullname" . }}-rag-bm25
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "enterprise-ai.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.services.ragService.bm25Storage.size }}
+  storageClassName: standard
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "enterprise-ai.fullname" . }}-rag-service
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "enterprise-ai.labels" . | nindent 4 }}
+    app: rag-service
+spec:
+  replicas: {{ .Values.services.ragService.replicas }}
+  selector:
+    matchLabels:
+      app: rag-service
+  template:
+    metadata:
+      labels:
+        app: rag-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8001"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: {{ include "enterprise-ai.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      volumes:
+        - name: bm25-data
+          persistentVolumeClaim:
+            claimName: {{ include "enterprise-ai.fullname" . }}-rag-bm25
+      containers:
+        - name: rag-service
+          image: {{ .Values.services.ragService.image }}:{{ .Values.services.ragService.tag }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: {{ .Values.services.ragService.port }}
+              name: http
+          envFrom:
+            - configMapRef:
+                name: {{ include "enterprise-ai.fullname" . }}-config
+            - secretRef:
+                name: {{ include "enterprise-ai.fullname" . }}-secrets
+          volumeMounts:
+            - name: bm25-data
+              mountPath: /data/bm25_index
+          resources:
+            {{- toYaml .Values.services.ragService.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.services.ragService.port }}
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: {{ .Values.services.ragService.port }}
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - rag-service
+                topologyKey: kubernetes.io/hostname
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "enterprise-ai.fullname" . }}-rag-service
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "enterprise-ai.labels" . | nindent 4 }}
+    app: rag-service
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.services.ragService.port }}
+      targetPort: {{ .Values.services.ragService.port }}
+      protocol: TCP
+      name: http
+  selector:
+    app: rag-service
+---
+{{- if .Values.services.ragService.hpa.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "enterprise-ai.fullname" . }}-rag-service-hpa
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "enterprise-ai.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "enterprise-ai.fullname" . }}-rag-service
+  minReplicas: {{ .Values.services.ragService.hpa.minReplicas }}
+  maxReplicas: {{ .Values.services.ragService.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.services.ragService.hpa.targetCPUUtilization }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.services.ragService.hpa.targetMemoryUtilization }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+    scaleUp:
+      stabilizationWindowSeconds: 0
+{{- end }}

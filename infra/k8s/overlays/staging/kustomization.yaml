@@ -1,0 +1,94 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+commonLabels:
+  environment: staging
+
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: api-gateway
+      spec:
+        replicas: 2
+        template:
+          spec:
+            containers:
+              - name: api-gateway
+                resources:
+                  requests:
+                    cpu: "250m"
+                    memory: "512Mi"
+                  limits:
+                    cpu: "1000m"
+                    memory: "1Gi"
+    target:
+      kind: Deployment
+      name: api-gateway
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: rag-service
+      spec:
+        replicas: 2
+        template:
+          spec:
+            containers:
+              - name: rag-service
+                resources:
+                  requests:
+                    cpu: "500m"
+                    memory: "1Gi"
+                  limits:
+                    cpu: "2000m"
+                    memory: "4Gi"
+    target:
+      kind: Deployment
+      name: rag-service
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: workflow-service
+      spec:
+        replicas: 2
+    target:
+      kind: Deployment
+      name: workflow-service
+
+images:
+  - name: enterprise-ai/api-gateway
+    newTag: staging-latest
+  - name: enterprise-ai/auth-service
+    newTag: staging-latest
+  - name: enterprise-ai/notification-service
+    newTag: staging-latest
+  - name: enterprise-ai/rag-service
+    newTag: staging-latest
+  - name: enterprise-ai/llm-service
+    newTag: staging-latest
+  - name: enterprise-ai/document-service
+    newTag: staging-latest
+  - name: enterprise-ai/workflow-service
+    newTag: staging-latest
+  - name: enterprise-ai/web
+    newTag: staging-latest
+  - name: enterprise-ai/admin
+    newTag: staging-latest
+
+configMapGenerator:
+  - name: enterprise-ai-config
+    namespace: enterprise-ai
+    behavior: merge
+    literals:
+      - APP_ENV=staging
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/enterprise_ai
+      - REDIS_URL=redis://redis:6379/0
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317

@@ -1,0 +1,350 @@
+# Default values for enterprise-ai
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+global:
+  # Global namespace
+  namespace: enterprise-ai
+  # Image registry
+  imageRegistry: ""
+  # Image pull secrets
+  imagePullSecrets: []
+  # Common labels
+  labels:
+    app.kubernetes.io/name: enterprise-ai
+    app.kubernetes.io/part-of: enterprise-ai-platform
+  # Monitoring
+  monitoring:
+    enabled: true
+    prometheus:
+      enabled: true
+      serviceMonitor:
+        enabled: true
+    grafana:
+      enabled: true
+    loki:
+      enabled: true
+    tempo:
+      enabled: true
+
+# PostgreSQL configuration
+postgresql:
+  enabled: true
+  primary:
+    persistence:
+      enabled: true
+      size: 50Gi
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+  auth:
+    username: postgres
+    password: "CHANGE_ME"
+    database: enterprise_ai
+  metrics:
+    enabled: true
+  pgvector:
+    enabled: true
+
+# Redis configuration
+redis:
+  enabled: true
+  architecture: standalone
+  auth:
+    enabled: true
+    password: "CHANGE_ME"
+  persistence:
+    enabled: true
+    size: 10Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+  metrics:
+    enabled: true
+
+# MinIO configuration
+minio:
+  enabled: true
+  mode: standalone
+  persistence:
+    enabled: true
+    size: 50Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  auth:
+    rootUser: minioadmin
+    rootPassword: "CHANGE_ME"
+  metrics:
+    enabled: true
+
+# Ollama configuration (optional, for local models)
+ollama:
+  enabled: false
+  persistence:
+    enabled: true
+    size: 50Gi
+  resources:
+    requests:
+      cpu: 2000m
+      memory: 8Gi
+    limits:
+      cpu: 8000m
+      memory: 16Gi
+
+# Jaeger configuration
+jaeger:
+  enabled: true
+  persistence:
+    enabled: true
+    size: 10Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+
+# Prometheus configuration
+prometheus:
+  enabled: true
+  server:
+    persistentVolume:
+      enabled: true
+      size: 20Gi
+    retention: 15d
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+  alertmanager:
+    enabled: true
+    persistentVolume:
+      enabled: true
+      size: 2Gi
+  pushgateway:
+    enabled: true
+  nodeExporter:
+    enabled: true
+  kubeStateMetrics:
+    enabled: true
+
+# Grafana configuration
+grafana:
+  enabled: true
+  persistence:
+    enabled: true
+    size: 10Gi
+  adminUser: admin
+  adminPassword: "CHANGE_ME"
+  datasources:
+    - name: Prometheus
+      type: prometheus
+      url: http://prometheus-server:80
+      access: proxy
+      isDefault: true
+  dashboards:
+    default:
+      enterprise-ai-overview:
+        gnetId: 12345
+        revision: 1
+        datasource: Prometheus
+
+# Ingress Nginx
+ingressNginx:
+  enabled: true
+  controller:
+    replicaCount: 2
+    service:
+      type: LoadBalancer
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+    metrics:
+      enabled: true
+    config:
+      proxy-body-size: "50m"
+      proxy-read-timeout: "300"
+      proxy-send-timeout: "300"
+
+# Cert Manager
+certManager:
+  enabled: true
+  installCRDs: true
+  clusterIssuer:
+    email: admin@enterprise-ai.example.com
+    server: https://acme-v02.api.letsencrypt.org/directory
+
+# Enterprise AI Services
+services:
+  apiGateway:
+    enabled: true
+    image: enterprise-ai/api-gateway
+    tag: latest
+    replicas: 2
+    port: 8000
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+    env: {}
+    hpa:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 10
+      targetCPUUtilization: 70
+      targetMemoryUtilization: 80
+
+  ragService:
+    enabled: true
+    image: enterprise-ai/rag-service
+    tag: latest
+    replicas: 2
+    port: 8001
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+    env: {}
+    bm25Storage:
+      enabled: true
+      size: 10Gi
+    hpa:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 8
+      targetCPUUtilization: 70
+      targetMemoryUtilization: 80
+
+  llmService:
+    enabled: true
+    image: enterprise-ai/llm-service
+    tag: latest
+    replicas: 2
+    port: 8003
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+    env: {}
+    hpa:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 8
+      targetCPUUtilization: 70
+      targetMemoryUtilization: 80
+
+  documentService:
+    enabled: true
+    image: enterprise-ai/document-service
+    tag: latest
+    replicas: 2
+    port: 8004
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+    env: {}
+    hpa:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 8
+      targetCPUUtilization: 70
+      targetMemoryUtilization: 80
+
+  workflowService:
+    enabled: true
+    image: enterprise-ai/workflow-service
+    tag: latest
+    replicas: 2
+    port: 8005
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+    env: {}
+    hpa:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 8
+      targetCPUUtilization: 70
+      targetMemoryUtilization: 80
+
+  web:
+    enabled: true
+    image: enterprise-ai/web
+    tag: latest
+    replicas: 2
+    port: 3000
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    env:
+      NEXT_PUBLIC_API_URL: "https://api.enterprise-ai.example.com/api/v1"
+    hpa:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 8
+      targetCPUUtilization: 70
+      targetMemoryUtilization: 80
+
+  admin:
+    enabled: true
+    image: enterprise-ai/admin
+    tag: latest
+    replicas: 2
+    port: 3000
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    env:
+      NEXT_PUBLIC_API_URL: "https://api.enterprise-ai.example.com/api/v1"
+    hpa:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 8
+      targetCPUUtilization: 70
+      targetMemoryUtilization: 80

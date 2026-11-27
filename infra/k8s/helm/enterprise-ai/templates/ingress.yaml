@@ -1,0 +1,78 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "enterprise-ai.fullname" . }}-ingress
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "enterprise-ai.labels" . | nindent 4 }}
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    {{- if .Values.global.certManager.enabled }}
+    cert-manager.io/cluster-issuer: {{ .Values.global.certManager.clusterIssuer.name | default "letsencrypt-prod" }}
+    {{- end }}
+    nginx.ingress.kubernetes.io/rate-limit: "{{ .Values.global.ingress.rateLimit | default "100" }}"
+    nginx.ingress.kubernetes.io/rate-limit-window: "{{ .Values.global.ingress.rateLimitWindow | default "1m" }}"
+    nginx.ingress.kubernetes.io/proxy-body-size: "{{ .Values.global.ingress.proxyBodySize | default "50m" }}"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "{{ .Values.global.ingress.proxyReadTimeout | default "300" }}"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "{{ .Values.global.ingress.proxySendTimeout | default "300" }}"
+spec:
+  tls:
+    {{- if .Values.global.certManager.enabled }}
+    - hosts:
+        - {{ .Values.global.ingress.apiHost }}
+        - {{ .Values.global.ingress.webHost }}
+        - {{ .Values.global.ingress.adminHost }}
+      secretName: {{ include "enterprise-ai.fullname" . }}-tls
+    {{- end }}
+  rules:
+    - host: {{ .Values.global.ingress.apiHost }}
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "enterprise-ai.fullname" . }}-api-gateway
+                port:
+                  number: {{ .Values.services.apiGateway.port }}
+          - path: /health
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "enterprise-ai.fullname" . }}-api-gateway
+                port:
+                  number: {{ .Values.services.apiGateway.port }}
+          - path: /ready
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "enterprise-ai.fullname" . }}-api-gateway
+                port:
+                  number: {{ .Values.services.apiGateway.port }}
+          - path: /metrics
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "enterprise-ai.fullname" . }}-api-gateway
+                port:
+                  number: {{ .Values.services.apiGateway.port }}
+    - host: {{ .Values.global.ingress.webHost }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "enterprise-ai.fullname" . }}-web
+                port:
+                  number: {{ .Values.services.web.port }}
+    - host: {{ .Values.global.ingress.adminHost }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "enterprise-ai.fullname" . }}-admin
+                port:
+                  number: {{ .Values.services.admin.port }}
